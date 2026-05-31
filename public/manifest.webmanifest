@@ -1,0 +1,28 @@
+{
+  "name": "Pixel Ledger 像素记账系统",
+  "short_name": "Pixel Ledger",
+  "description": "本地优先的像素风记账应用",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#f9f3df",
+  "theme_color": "#2d2438",
+  "orientation": "any",
+  "icons": [
+    {
+      "src": "./icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "./icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    },
+    {
+      "src": "./apple-touch-icon.png",
+      "sizes": "180x180",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

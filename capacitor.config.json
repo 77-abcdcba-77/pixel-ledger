@@ -1,0 +1,10 @@
+{
+  "appId": "com.mruni.pixelledger",
+  "appName": "Pixel Ledger",
+  "webDir": "dist",
+  "ios": {
+    "contentInset": "always",
+    "preferredContentMode": "mobile",
+    "scheme": "PixelLedger"
+  }
+}
