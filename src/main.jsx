@@ -510,6 +510,48 @@ function LoginPage({ onLogin }) {
   );
 }
 
+// ---------- site gate ----------
+
+function SiteGate({ onUnlock }) {
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+
+  function handleSubmit(e) {
+    e.preventDefault();
+    const p = password.trim();
+    if (!p) { setError('请输入访问密码'); return; }
+    if (hashPassword(p) === SITE_PASSWORD_HASH) {
+      sessionStorage.setItem(SITE_UNLOCK_KEY, '1');
+      onUnlock();
+    } else {
+      setError('密码错误，请重试');
+      setPassword('');
+    }
+  }
+
+  return (
+    <div className="login-overlay">
+      <div className="login-card">
+        <div className="login-brand">
+          <div className="brand-icon">₿</div>
+          <div>
+            <b>Pixel Ledger</b>
+            <small>像素记账系统</small>
+          </div>
+        </div>
+        <form onSubmit={handleSubmit} className="login-form">
+          <label>网站访问密码
+            <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="请输入访问密码" autoFocus />
+          </label>
+          {error && <p className="login-msg error">{error}</p>}
+          <Button type="submit" className="login-btn">验证进入</Button>
+        </form>
+        <p className="login-hint">本站需要密码才能访问。请输入正确的访问密码。</p>
+      </div>
+    </div>
+  );
+}
+
 // ---------- app pages ----------
 
 function Dashboard({ data, setTab }) {
@@ -1077,6 +1119,8 @@ function SettingsPage({ data, setData, username, onLogout }) {
 }
 
 const CURRENT_USER_KEY = 'pixel-ledger-current-user';
+const SITE_UNLOCK_KEY = 'pixel-site-unlocked';
+const SITE_PASSWORD_HASH = 'um37r1s34'; // hash of the site viewing password
 
 function getStoredUsername() {
   const stored = storage.getItem(CURRENT_USER_KEY);
@@ -1094,6 +1138,7 @@ function createSession(username, version = 0) {
 }
 
 function App() {
+  const [siteUnlocked, setSiteUnlocked] = useState(() => sessionStorage.getItem(SITE_UNLOCK_KEY) === '1');
   const [session, setSession] = useState(() => createSession(getStoredUsername()));
   const [tab, setTab] = useState('dashboard');
   const { username, data } = session;
@@ -1131,6 +1176,10 @@ function App() {
       scheduleBackup(data);
     }
   }, [data, username]);
+
+  if (!siteUnlocked) {
+    return <SiteGate onUnlock={() => setSiteUnlocked(true)} />;
+  }
 
   if (!username || !data) {
     return <LoginPage key={`login-${session.version}`} onLogin={handleLogin} />;
