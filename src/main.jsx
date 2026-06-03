@@ -2,36 +2,80 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import './styles.css';
 
-const STORAGE_KEY = 'pixel-ledger-system-v1';
-const USERS_KEY = 'pixel-ledger-users';
-const CN_MONTH = new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: '2-digit' });
-const memoryStorage = new Map();
-const storage = {
-  getItem(key) {
-    try {
-      return window.localStorage?.getItem(key) ?? memoryStorage.get(key) ?? null;
-    } catch {
-      return memoryStorage.get(key) ?? null;
-    }
-  },
-  setItem(key, value) {
-    const text = String(value);
-    memoryStorage.set(key, text);
-    try {
-      window.localStorage?.setItem(key, text);
-    } catch {
-      // In private or restricted WebViews, the in-memory copy keeps the app usable.
-    }
-  },
-  removeItem(key) {
-    memoryStorage.delete(key);
-    try {
-      window.localStorage?.removeItem(key);
-    } catch {
-      // Ignore storage sandbox failures.
-    }
+// ---- Server API helpers ----
+const API_BASE = '';
+
+async function apiCall(path, options = {}) {
+  const res = await fetch(API_BASE + path, {
+    headers: { 'Content-Type': 'application/json' },
+    ...options,
+  });
+  return res.json();
+}
+
+async function saveToServer(data) {
+  try {
+    await apiCall('/api/data', {
+      method: 'POST',
+      body: JSON.stringify({ data }),
+    });
+  } catch (e) {
+    console.warn('保存到服务器失败', e);
   }
-};
+}
+
+async function loadFromServer() {
+  try {
+    const result = await apiCall('/api/data');
+    if (result.ok && result.data) {
+      return { ok: true, data: result.data };
+    }
+    return { ok: false, error: result.error || '加载失败' };
+  } catch (e) {
+    return { ok: false, error: '无法连接服务器' };
+  }
+}
+
+async function serverLogin(username, password) {
+  try {
+    const result = await apiCall('/api/login', {
+      method: 'POST',
+      body: JSON.stringify({ username, password }),
+    });
+    return result;
+  } catch (e) {
+    return { ok: false, error: '无法连接服务器' };
+  }
+}
+
+async function serverRegister(username, password) {
+  try {
+    const result = await apiCall('/api/register', {
+      method: 'POST',
+      body: JSON.stringify({ username, password }),
+    });
+    return result;
+  } catch (e) {
+    return { ok: false, error: '无法连接服务器' };
+  }
+}
+
+async function serverLogout() {
+  try {
+    await apiCall('/api/logout', { method: 'POST' });
+  } catch (e) { /* ignore */ }
+}
+
+async function checkLoginStatus() {
+  try {
+    const result = await apiCall('/api/check');
+    return result.logged_in ? result.username : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+const CN_MONTH = new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: '2-digit' });
 
 const expenseCategories = ['餐饮', '交通', '购物', '住房', '娱乐', '学习', '医疗', '人情', '旅行', '其他'];
 const incomeCategories = ['工资', '兼职', '奖金', '报销', '理财', '红包', '其他'];
@@ -61,77 +105,30 @@ function safeNumber(value) {
   return Number.isFinite(n) ? n : 0;
 }
 
-// ---------- user account system ----------
+// ---------- user account system (server-side) ----------
 
-function getStorageKey(username) {
-  return `${STORAGE_KEY}-user-${username}`;
+const CURRENT_USER_KEY = 'pixel-ledger-current-user';
+
+function getStoredUsername() {
+  return sessionStorage.getItem(CURRENT_USER_KEY) || null;
 }
 
-function hashPassword(password) {
-  let hash = 0;
-  const salt = 'pixel-ledger-salt-2024';
-  const str = salt + password;
-  for (let i = 0; i < str.length; i++) {
-    const char = str.charCodeAt(i);
-    hash = ((hash << 5) - hash) + char;
-    hash |= 0;
-  }
-  return Math.abs(hash).toString(36) + str.length.toString(36) + (str.charCodeAt(0) || 0).toString(36);
+function storeUsername(username) {
+  sessionStorage.setItem(CURRENT_USER_KEY, username);
 }
 
-function loadUsers() {
-  try {
-    const raw = storage.getItem(USERS_KEY);
-    if (!raw) return [];
-    return JSON.parse(raw);
-  } catch {
-    return [];
-  }
+function clearStoredUsername() {
+  sessionStorage.removeItem(CURRENT_USER_KEY);
 }
 
-function saveUsers(users) {
-  storage.setItem(USERS_KEY, JSON.stringify(users));
+async function registerUser(username, password) {
+  const result = await serverRegister(username, password);
+  return result;
 }
 
-function registerUser(username, password) {
-  const users = loadUsers();
-  if (users.some((u) => u.username === username)) {
-    return { ok: false, error: '该用户名已被注册' };
-  }
-  users.push({ username, passwordHash: hashPassword(password) });
-  saveUsers(users);
-  return { ok: true };
-}
-
-function loginUser(username, password) {
-  const users = loadUsers();
-  const user = users.find((u) => u.username === username);
-  if (!user) return { ok: false, error: '用户名不存在' };
-  if (user.passwordHash !== hashPassword(password)) return { ok: false, error: '密码错误' };
-  return { ok: true };
-}
-
-function migrateExistingData(username) {
-  try {
-    const raw = storage.getItem(STORAGE_KEY);
-    if (!raw) return false;
-    const targetKey = getStorageKey(username);
-    if (storage.getItem(targetKey)) return false;
-    storage.setItem(targetKey, raw);
-    storage.removeItem(STORAGE_KEY);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function clearOtherUsersData() {
-  const users = loadUsers();
-  for (const user of users) {
-    if (user.username === 'admin') continue;
-    const key = getStorageKey(user.username);
-    storage.removeItem(key);
-  }
+async function loginUser(username, password) {
+  const result = await serverLogin(username, password);
+  return result;
 }
 
 // ----------------------------------------
@@ -224,21 +221,17 @@ function makeDemoData() {
   };
 }
 
-function loadData(username) {
-  const key = getStorageKey(username);
-  try {
-    const raw = storage.getItem(key);
-    if (!raw) return username === 'admin' ? makeDemoData() : makeEmptyData();
-    const parsed = JSON.parse(raw);
-    // If admin's saved data is empty (from a previous bug), restore demo data
-    if (username === 'admin' && (!parsed.records || parsed.records.length === 0) && (!parsed.accounts || parsed.accounts.length === 0)) {
-      return makeDemoData();
-    }
-    return { ...makeEmptyData(), ...parsed };
-  } catch (error) {
-    console.warn('读取本地数据失败，已恢复空白数据', error);
+async function loadData(username) {
+  if (!username) {
     return username === 'admin' ? makeDemoData() : makeEmptyData();
   }
+  const result = await loadFromServer();
+  if (result.ok && result.data && result.data.records) {
+    return { ...makeEmptyData(), ...result.data };
+  }
+  // If server has no data, return empty or demo data
+  console.warn('从服务器加载数据失败，使用空白数据', result.error);
+  return username === 'admin' ? makeDemoData() : makeEmptyData();
 }
 
 function downloadFile(name, content, type = 'application/json') {
@@ -250,54 +243,6 @@ function downloadFile(name, content, type = 'application/json') {
   a.click();
   a.remove();
   URL.revokeObjectURL(a.href);
-}
-
-// ---------- auto-backup system ----------
-
-let backupDirHandle = null;
-let backupDebounce = null;
-
-async function selectBackupDir() {
-  try {
-    backupDirHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function hasBackupDir() {
-  return backupDirHandle !== null;
-}
-
-function hasFileSystemAPI() {
-  return typeof window.showDirectoryPicker === 'function';
-}
-
-async function writeBackup(data) {
-  if (!backupDirHandle) return;
-  try {
-    const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-    const fileName = `ledger-backup-${ts}.json`;
-    const fileHandle = await backupDirHandle.getFileHandle(fileName, { create: true });
-    const writable = await fileHandle.createWritable();
-    await writable.write(JSON.stringify(data, null, 2));
-    await writable.close();
-  } catch (e) {
-    console.warn('自动备份写入失败', e);
-  }
-}
-
-function scheduleBackup(data) {
-  if (backupDebounce) clearTimeout(backupDebounce);
-  backupDebounce = setTimeout(() => {
-    if (backupDirHandle) {
-      writeBackup(data);
-    } else {
-      const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-      downloadFile(`ledger-backup-${ts}.json`, JSON.stringify(data, null, 2));
-    }
-  }, 3000);
 }
 
 // ----------------------------------------
@@ -449,7 +394,7 @@ function LoginPage({ onLogin }) {
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
 
-  function handleSubmit(e) {
+  async function handleSubmit(e) {
     e.preventDefault();
     setError('');
     setSuccess('');
@@ -460,14 +405,12 @@ function LoginPage({ onLogin }) {
     if (p.length < 3) { setError('密码至少 3 个字符'); return; }
 
     if (mode === 'register') {
-      const result = registerUser(u, p);
+      const result = await registerUser(u, p);
       if (!result.ok) { setError(result.error); return; }
-      // check if old data exists at the legacy key and migrate it
-      const migrated = migrateExistingData(u);
-      setSuccess('注册成功！' + (migrated ? ' 已迁移已有数据到该账号。' : ''));
+      setSuccess('注册成功！');
       setTimeout(() => onLogin(u), 800);
     } else {
-      const result = loginUser(u, p);
+      const result = await loginUser(u, p);
       if (!result.ok) { setError(result.error); return; }
       onLogin(u);
     }
@@ -990,7 +933,6 @@ function SettingsPage({ data, setData, username, onLogout }) {
   const [bookName, setBookName] = useState('');
   const [reminder, setReminder] = useState({ text: '', time: '21:30' });
   const [rule, setRule] = useState({ title: '', type: 'expense', amount: '', category: '餐饮', accountId: data.accounts[0]?.id || '', day: 1, enabled: true });
-  const [backupActive, setBackupActive] = useState(hasBackupDir());
 
   function exportJson() {
     downloadFile(`pixel-ledger-${today()}.json`, JSON.stringify(data, null, 2), 'application/json;charset=utf-8');
@@ -1077,23 +1019,13 @@ function SettingsPage({ data, setData, username, onLogout }) {
         <div className="chip-list">{data.recurring.map((r) => <span key={r.id}>🔁 每月 {r.day} 日 · {r.title} · {money(r.amount)}</span>)}</div>
       </Panel>
 
-      <Panel title="自动备份">
+      <Panel title="数据备份">
         <div className="filters" style={{flexDirection:'column',alignItems:'flex-start',gap:8}}>
-          {hasFileSystemAPI() ? (
-            hasBackupDir() ? (
-              <>
-                <span className="hint" style={{color:'var(--success, #52b788)'}}>自动备份已启用 - 每次修改数据后 3 秒自动导出到所选文件夹</span>
-                <Button variant="ghost" onClick={async () => { await selectBackupDir(); setBackupActive(hasBackupDir()); }}>更换备份文件夹</Button>
-              </>
-            ) : (
-              <>
-                <span className="hint">选择文件夹后，每次修改数据都会自动导出备份 JSON 到该文件夹</span>
-                <Button onClick={async () => { const ok = await selectBackupDir(); setBackupActive(ok); }}>选择备份文件夹</Button>
-              </>
-            )
-          ) : (
-            <span className="hint">当前浏览器不支持 File System Access API，备份将以下载形式保存。建议使用 Chrome 或 Edge 以获得静默自动备份体验。</span>
-          )}
+          <span className="hint" style={{color:'var(--success, #52b788)'}}>数据已自动存储在服务器上，多端数据互通。你也可以手动导出 JSON 或 CSV 作为本地备份。</span>
+          <div className="data-actions" style={{marginTop:8}}>
+            <Button onClick={exportJson}>导出 JSON 备份</Button>
+            <Button variant="ghost" onClick={exportCsv}>导出 CSV</Button>
+          </div>
         </div>
       </Panel>
 
@@ -1103,12 +1035,12 @@ function SettingsPage({ data, setData, username, onLogout }) {
           <span style={{fontSize:'18px',fontWeight:900}}>{username}</span>
           <Button variant="danger" onClick={onLogout}>退出登录</Button>
         </div>
-        <p className="hint" style={{marginTop:12}}>数据每次修改后3秒自动保存到本地文件夹，同时保留在浏览器中。</p>
+        <p className="hint" style={{marginTop:12}}>数据实时同步到服务器，换设备登录同一账号即可访问所有数据。</p>
       </Panel>
 
       <Panel title="工程化升级路线" className="wide">
         <div className="roadmap">
-          <div><b>1. 当前原型</b><p>React + localStorage，本地可运行，适合确认交互和视觉。</p></div>
+          <div><b>1. 当前版本</b><p>React + Flask + SQLite，数据存服务器，多端互通，支持多账号。</p></div>
           <div><b>2. 小程序版</b><p>复用数据模型，替换页面层为微信小程序/uni-app，存储换成云数据库。</p></div>
           <div><b>3. App版</b><p>迁移到 React Native / Flutter，接入登录、同步、OCR、语音和推送。</p></div>
           <div><b>4. 商业化</b><p>增加会员、模板账本、家庭协作、数据恢复、隐私加密。</p></div>
@@ -1118,30 +1050,38 @@ function SettingsPage({ data, setData, username, onLogout }) {
   );
 }
 
-const CURRENT_USER_KEY = 'pixel-ledger-current-user';
 const SITE_UNLOCK_KEY = 'pixel-site-unlocked';
 const SITE_PASSWORD_HASH = 'um37r1s34'; // hash of the site viewing password
 
-function getStoredUsername() {
-  const stored = storage.getItem(CURRENT_USER_KEY);
-  if (!stored) return null;
-  const users = loadUsers();
-  return users.some((u) => u.username === stored) ? stored : null;
-}
-
-function createSession(username, version = 0) {
-  return {
-    username,
-    data: username ? loadData(username) : null,
-    version
-  };
+function createSession(username, data = null, version = 0) {
+  return { username, data, version };
 }
 
 function App() {
   const [siteUnlocked, setSiteUnlocked] = useState(() => sessionStorage.getItem(SITE_UNLOCK_KEY) === '1');
-  const [session, setSession] = useState(() => createSession(getStoredUsername()));
+  const [authLoading, setAuthLoading] = useState(true);
+  const [session, setSession] = useState(() => createSession(null));
   const [tab, setTab] = useState('dashboard');
   const { username, data } = session;
+
+  // On mount, check if user is already logged in
+  useEffect(() => {
+    (async () => {
+      setAuthLoading(true);
+      const storedUser = getStoredUsername();
+      if (storedUser) {
+        const serverUser = await checkLoginStatus();
+        if (serverUser === storedUser) {
+          const result = await loadData(storedUser);
+          setSession(createSession(storedUser, result, 1));
+          setAuthLoading(false);
+          return;
+        }
+        clearStoredUsername();
+      }
+      setAuthLoading(false);
+    })();
+  }, []);
 
   const setData = useCallback((next) => {
     setSession((current) => {
@@ -1151,31 +1091,45 @@ function App() {
     });
   }, []);
 
-  const handleLogin = useCallback((user) => {
-    storage.setItem(CURRENT_USER_KEY, user);
+  const handleLogin = useCallback(async (user) => {
+    storeUsername(user);
     setTab('dashboard');
-    setSession((current) => createSession(user, current.version + 1));
+    const result = await loadData(user);
+    setSession(createSession(user, result, Math.random()));
   }, []);
 
-  const handleLogout = useCallback(() => {
-    storage.removeItem(CURRENT_USER_KEY);
+  const handleLogout = useCallback(async () => {
+    await serverLogout();
+    clearStoredUsername();
     setTab('dashboard');
-    setSession((current) => createSession(null, current.version + 1));
+    setSession(createSession(null, null, Math.random()));
   }, []);
 
   const saveReady = useRef(false);
 
-  // persist data whenever it changes (skip initial mount to avoid overwriting)
+  // Persist data to server whenever it changes (skip initial mount)
   useEffect(() => {
     if (!saveReady.current) {
       saveReady.current = true;
       return;
     }
     if (username && data) {
-      storage.setItem(getStorageKey(username), JSON.stringify(data));
-      scheduleBackup(data);
+      saveToServer(data);
     }
   }, [data, username]);
+
+  if (authLoading) {
+    return (
+      <div className="login-overlay">
+        <div className="login-card" style={{ textAlign: 'center' }}>
+          <div className="login-brand">
+            <div className="brand-icon">₿</div>
+            <div><b>Pixel Ledger</b><small>正在连接服务器...</small></div>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   if (!siteUnlocked) {
     return <SiteGate onUnlock={() => setSiteUnlocked(true)} />;
@@ -1210,7 +1164,7 @@ function App() {
           <span>{username}</span>
           <button onClick={handleLogout} title="退出登录">退出</button>
         </div>
-        <div className="side-note">本地存储 · 多账号 · 可导出 · 适合二次开发</div>
+        <div className="side-note">云端存储 · 多账号 · 多端互通 · 数据安全</div>
       </aside>
       <main>
         <header className="topbar">
